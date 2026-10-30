@@ -1,0 +1,76 @@
+name: RDP Windows Machine
+on:
+  workflow_dispatch:
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+    steps:
+      - name: Clean Garbage
+        run: |
+          Remove-Item -Path "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
+      - name: Configure RDP
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
+      - name: Create User
+        run: |
+          $password = "P@ssw0rd123!"
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "Skyro" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "Skyro"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Skyro"
+          echo "RDP_CREDS=User: Skyro | Password: $password" >> $env:GITHUB_ENV
+      - name: Install Tailscale
+        run: |
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "$env:TEMP\tailscale.msi"
+          Start-Process msiexec.exe -ArgumentList "/i $env:TEMP\tailscale.msi /quiet /norestart" -Wait
+          Remove-Item "$env:TEMP\tailscale.msi" -Force
+      - name: Connect Tailscale
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          if (-not $tsIP) { Write-Error "Tailscale IP failed"; exit 1 }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+      - name: Keep Alive
+        run: |
+          Write-Host "=== RDP ACCESS ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "User: Skyro | Pass: P@ssw0rd123!"
+          Write-Host "=================="
+          $i = 0
+          while ($i -lt 300) {
+              Start-Sleep -Seconds 60
+              $i++
+          }
+      - name: Save Everything
+        if: always()
+        run: |
+          $pathsToSave = @("$env:USERPROFILE\Desktop", "$env:USERPROFILE\Documents", "$env:USERPROFILE\Downloads", "$env:LOCALAPPDATA\Programs")
+          if (Test-Path "C:\temp_backup") { Remove-Item -Path "C:\temp_backup" -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path "C:\temp_backup" | Out-Null
+          foreach ($path in $pathsToSave) {
+              if (Test-Path $path) {
+                  $dest = "C:\temp_backup\" + (Split-Path $path -Leaf)
+                  robocopy $path $dest /E /R:0 /W:0 /NFL /NDL /NJH /NJS /nc /ns /np
+              }
+          }
+          7z a -tzip C:\entorno.zip C:\temp_backup\
+          Remove-Item -Path "C:\temp_backup" -Recurse -Force
+      - name: Upload Backup
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workspace-backup
+          path: C:\entorno.zip
+          retention-days: 5
