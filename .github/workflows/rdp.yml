@@ -1,15 +1,60 @@
-name: RDP Windows Machine
+name: RDP Windows Machine (Notepad Edition)
 on:
   workflow_dispatch:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 3600
+    timeout-minutes: 350 # Límite de GitHub (6 horas)
     steps:
-      - name: Clean Garbage
+      - name: Aggressive Cleanup (Free Disk Space)
         run: |
+          # Desactivar hibernación (libera ~3GB)
+          powercfg -h off
+          
+          # Borrar basura de Windows
           Remove-Item -Path "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -Path "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "C:\Windows.old" -Recurse -Force -ErrorAction SilentlyContinue
+          
+          # Borrar SDKs preinstalados que NO usas (Libera MUCHÍSIMO espacio)
+          Remove-Item -Path "C:\Program Files\Android" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "C:\Program Files\Microsoft SDKs" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "C:\Program Files\Java" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "C:\hostedtoolcache\windows\Java*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "C:\hostedtoolcache\windows\Ruby" -Recurse -Force -ErrorAction SilentlyContinue
+          
+          # Limpieza de componentes de Windows
+          Dism.exe /online /Cleanup-Image /StartComponentCleanup /ResetBase
+
+      - name: Extreme Performance Tweaks
+        run: |
+          # 1. Desactivar Efectos Visuales (Animaciones)
+          Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" -Name "VisualFXSetting" -Value 2 -Force
+          
+          # 2. Desactivar Windows Search (Causa muchísimo lag en RDP)
+          Set-Service -Name WSearch -StartupType Disabled -ErrorAction SilentlyContinue
+          Stop-Service -Name WSearch -Force -ErrorAction SilentlyContinue
+          
+          # 3. Plan de energía de Alto Rendimiento
+          powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+
+      - name: Install Tools (Node, .NET 6, Redis, Notepad++)
+        run: |
+          # Instalar Chocolatey
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          
+          # Instalar Node.js LTS, .NET 6 SDK, 7zip y Notepad++ (por si te aburres del bloc de notas clásico)
+          choco install nodejs-lts dotnet-6.0-sdk 7zip notepadplusplus -y --no-progress
+          
+          # Descargar e Instalar Redis (tporadowski)
+          Invoke-WebRequest -Uri "https://github.com/tporadowski/redis/releases/download/v5.0.14.1/Redis-x64-5.0.14.1.zip" -OutFile "C:\Redis.zip"
+          Expand-Archive -Path "C:\Redis.zip" -DestinationPath "C:\Redis" -Force
+          Set-Location "C:\Redis"
+          .\redis-server.exe --service-install redis.windows.conf --loglevel verbose
+          Start-Service Redis
+
       - name: Configure RDP
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
@@ -17,6 +62,7 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
+
       - name: Create User
         run: |
           $password = "P@ssw0rd123!"
@@ -24,12 +70,13 @@ jobs:
           New-LocalUser -Name "Skyro" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "Skyro"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Skyro"
-          echo "RDP_CREDS=User: Skyro | Password: $password" >> $env:GITHUB_ENV
+
       - name: Install Tailscale
         run: |
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "$env:TEMP\tailscale.msi"
           Start-Process msiexec.exe -ArgumentList "/i $env:TEMP\tailscale.msi /quiet /norestart" -Wait
           Remove-Item "$env:TEMP\tailscale.msi" -Force
+
       - name: Connect Tailscale
         run: |
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
@@ -42,35 +89,16 @@ jobs:
           }
           if (-not $tsIP) { Write-Error "Tailscale IP failed"; exit 1 }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
       - name: Keep Alive
         run: |
           Write-Host "=== RDP ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
           Write-Host "User: Skyro | Pass: P@ssw0rd123!"
+          Write-Host "Tools: Node.js, .NET 6, Redis, Notepad++"
           Write-Host "=================="
           $i = 0
-          while ($i -lt 300) {
+          while ($i -lt 330) { 
               Start-Sleep -Seconds 60
               $i++
           }
-      - name: Save Everything
-        if: always()
-        run: |
-          $pathsToSave = @("$env:USERPROFILE\Desktop", "$env:USERPROFILE\Documents", "$env:USERPROFILE\Downloads", "$env:LOCALAPPDATA\Programs")
-          if (Test-Path "C:\temp_backup") { Remove-Item -Path "C:\temp_backup" -Recurse -Force }
-          New-Item -ItemType Directory -Force -Path "C:\temp_backup" | Out-Null
-          foreach ($path in $pathsToSave) {
-              if (Test-Path $path) {
-                  $dest = "C:\temp_backup\" + (Split-Path $path -Leaf)
-                  robocopy $path $dest /E /R:0 /W:0 /NFL /NDL /NJH /NJS /nc /ns /np
-              }
-          }
-          7z a -tzip C:\entorno.zip C:\temp_backup\
-          Remove-Item -Path "C:\temp_backup" -Recurse -Force
-      - name: Upload Backup
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: workspace-backup
-          path: C:\entorno.zip
-          retention-days: 5
