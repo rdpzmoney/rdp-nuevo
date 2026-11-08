@@ -90,7 +90,7 @@ jobs:
 
       - name: Create User
         run: |
-          $password = "1234"
+          $password = "P@ssw0rd123!"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           New-LocalUser -Name "Skyro" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "Skyro"
@@ -119,7 +119,7 @@ jobs:
         run: |
           Write-Host "=== RDP ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "User: Skyro | Pass: 1234"
+          Write-Host "User: Skyro | Pass: P@ssw0rd123!"
           Write-Host "Node 16, .NET 6, Redis y Claude listos."
           Write-Host "=================="
           $i = 0
