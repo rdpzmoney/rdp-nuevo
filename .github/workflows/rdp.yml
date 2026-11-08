@@ -1,4 +1,4 @@
-name: RDP Windows Machine (Notepad Edition)
+name: RDP Windows Machine (Auto Node16 + Claude)
 on:
   workflow_dispatch:
 jobs:
@@ -8,52 +8,77 @@ jobs:
     steps:
       - name: Aggressive Cleanup (Free Disk Space)
         run: |
-          # Desactivar hibernación (libera ~3GB)
           powercfg -h off
-          
-          # Borrar basura de Windows
           Remove-Item -Path "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -Path "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -Path "C:\Windows.old" -Recurse -Force -ErrorAction SilentlyContinue
-          
-          # Borrar SDKs preinstalados que NO usas (Libera MUCHÍSIMO espacio)
           Remove-Item -Path "C:\Program Files\Android" -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -Path "C:\Program Files\Microsoft SDKs" -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -Path "C:\Program Files\Java" -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -Path "C:\hostedtoolcache\windows\Java*" -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -Path "C:\hostedtoolcache\windows\Ruby" -Recurse -Force -ErrorAction SilentlyContinue
-          
-          # Limpieza de componentes de Windows
           Dism.exe /online /Cleanup-Image /StartComponentCleanup /ResetBase
 
       - name: Extreme Performance Tweaks
         run: |
-          # 1. Desactivar Efectos Visuales (Animaciones)
           Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" -Name "VisualFXSetting" -Value 2 -Force
-          
-          # 2. Desactivar Windows Search (Causa muchísimo lag en RDP)
           Set-Service -Name WSearch -StartupType Disabled -ErrorAction SilentlyContinue
           Stop-Service -Name WSearch -Force -ErrorAction SilentlyContinue
-          
-          # 3. Plan de energía de Alto Rendimiento
           powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
 
-      - name: Install Tools (Node, .NET 6, Redis, Notepad++)
+      - name: Install .NET 6, Redis, and Node 16 (Bypass GitHub's Node)
         run: |
           # Instalar Chocolatey
           Set-ExecutionPolicy Bypass -Scope Process -Force
           [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
           iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
           
-          # Instalar Node.js LTS, .NET 6 SDK, 7zip y Notepad++ (por si te aburres del bloc de notas clásico)
-          choco install nodejs-lts dotnet-6.0-sdk 7zip notepadplusplus -y --no-progress
+          # Instalar .NET 6 y 7zip
+          choco install dotnet-6.0-sdk 7zip -y --no-progress
           
-          # Descargar e Instalar Redis (tporadowski)
+          # Descargar e instalar Node.js 16 Portable (Inmune a GitHub)
+          Invoke-WebRequest -Uri "https://nodejs.org/dist/v16.20.2/node-v16.20.2-win-x64.zip" -OutFile "C:\node16.zip"
+          Expand-Archive -Path "C:\node16.zip" -DestinationPath "C:\" -Force
+          Rename-Item -Path "C:\node-v16.20.2-win-x64" -NewName "node16"
+          Remove-Item -Path "C:\node16.zip"
+          
+          # FORZAR a Windows a usar Node 16 SIEMPRE
+          [Environment]::SetEnvironmentVariable("Path", "C:\node16;" + [Environment]::GetEnvironmentVariable("Path", "Machine"), "Machine")
+          $env:Path = "C:\node16;" + $env:Path
+          
+          # Descargar e Instalar Redis
           Invoke-WebRequest -Uri "https://github.com/tporadowski/redis/releases/download/v5.0.14.1/Redis-x64-5.0.14.1.zip" -OutFile "C:\Redis.zip"
           Expand-Archive -Path "C:\Redis.zip" -DestinationPath "C:\Redis" -Force
           Set-Location "C:\Redis"
           .\redis-server.exe --service-install redis.windows.conf --loglevel verbose
           Start-Service Redis
+
+      - name: Download Claude Desktop & Setup MCP
+        run: |
+          # Crear carpetas necesarias en el usuario Skyro
+          $userPath = "C:\Users\Skyro"
+          New-Item -ItemType Directory -Force -Path "$userPath\Desktop" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$userPath\AppData\Roaming\Claude" | Out-Null
+          
+          # Descargar Claude a tu escritorio
+          Invoke-WebRequest -Uri "https://storage.googleapis.com/osprey-downloads-c02f6a0d-347c-492b-a752-3e0651722e97/nest-win-x64/Claude-Setup-x64.exe" -OutFile "$userPath\Desktop\ClaudeSetup.exe"
+          
+          # Crear el archivo de configuracion MCP automaticamente
+          $mcpConfig = @"
+          {
+            "mcpServers": {
+              "filesystem": {
+                "command": "npx",
+                "args": [
+                  "-y",
+                  "@modelcontextprotocol/server-filesystem",
+                  "C:\\Users\\Skyro\\Desktop\\economy-simulator-main"
+                ]
+              }
+            }
+          }
+          "@
+          $mcpConfig | Out-File -FilePath "$userPath\AppData\Roaming\Claude\claude_desktop_config.json" -Encoding utf8
 
       - name: Configure RDP
         run: |
@@ -65,7 +90,7 @@ jobs:
 
       - name: Create User
         run: |
-          $password = "P@ssw0rd123!"
+          $password = "1234"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           New-LocalUser -Name "Skyro" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "Skyro"
@@ -94,8 +119,8 @@ jobs:
         run: |
           Write-Host "=== RDP ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "User: Skyro | Pass: P@ssw0rd123!"
-          Write-Host "Tools: Node.js, .NET 6, Redis, Notepad++"
+          Write-Host "User: Skyro | Pass: 1234"
+          Write-Host "Node 16, .NET 6, Redis y Claude listos."
           Write-Host "=================="
           $i = 0
           while ($i -lt 330) { 
